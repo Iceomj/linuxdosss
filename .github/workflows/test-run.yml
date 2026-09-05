@@ -31,39 +31,21 @@ jobs:
           pip install DrissionPage
           sudo apt-get update -qq
           sudo apt-get install -y -qq xvfb
-      - name: Chrome diagnostics
+      - name: Network check
         run: |
-          which google-chrome || echo "no google-chrome"
-          google-chrome --version || echo "version failed"
-          echo "=== A: direct headless dump-dom ==="
-          timeout 60 google-chrome --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --dump-dom https://example.com > /tmp/dom.html 2>/tmp/a.err && echo "A OK" || echo "A FAILED rc=$?"
-          head -c 200 /tmp/dom.html || true
-          echo "=== A stderr ==="
-          tail -30 /tmp/a.err || true
-          echo "=== B: remote debugging port ==="
-          rm -rf /tmp/cprof
-          nohup google-chrome --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --remote-debugging-port=9333 --user-data-dir=/tmp/cprof about:blank > /tmp/b.log 2>&1 &
-          sleep 10
-          curl -sS --max-time 10 http://127.0.0.1:9333/json/version && echo "B OK" || echo "B FAILED: port unreachable"
-          echo "=== B log ==="
-          tail -30 /tmp/b.log || true
-          pkill -f "remote-debugging-port=9333" || true
-      - name: Run script
-        env:
-          LINUXDO_USERNAME: ${{ secrets.LINUXDO_USERNAME }}
-          LINUXDO_PASSWORD: ${{ secrets.LINUXDO_PASSWORD }}
-        run: |
-          T="${{ github.event.inputs.topics || '3' }}"
-          L="${{ github.event.inputs.like_rate || '0' }}"
-          M="${{ github.event.inputs.mode || 'xvfb' }}"
-          echo "mode=$M topics=$T like=$L"
-          if [ "$M" = "headless" ]; then
-            python linux_do_headless.py --topics "$T" --like-rate "$L" --debug
-          else
-            xvfb-run -a --server-args="-screen 0 1920x1080x24" python linux_do_headless.py --topics "$T" --like-rate "$L" --debug --no-headless
-          fi
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          IP=$(curl -s --max-time 15 https://api.ipify.org || echo unknown)
+          S1=$(curl -s -o /tmp/l1.html -w '%{http_code}' --max-time 20 -A "$UA" https://linux.do/login || echo err)
+          sleep 5
+          S2=$(curl -s -o /tmp/l2.html -w '%{http_code}' --max-time 20 -A "$UA" https://linux.do/ || echo err)
+          echo "## Network" >> $GITHUB_STEP_SUMMARY
+          echo "egress_ip=$IP" >> $GITHUB_STEP_SUMMARY
+          echo "curl_login_status=$S1" >> $GITHUB_STEP_SUMMARY
+          echo "curl_home_status=$S2" >> $GITHUB_STEP_SUMMARY
+          echo "login_body:" >> $GITHUB_STEP_SUMMARY
+          head -c 200 /tmp/l1.html >> $GITHUB_STEP_SUMMARY || true
+          echo "" >> $GITHUB_STEP_SUMMARY
       - name: Probe login page
-        if: always()
         run: |
           cat > probe.py <<'EOF'
           import time, os
@@ -83,17 +65,30 @@ jobs:
               print('screenshot failed:', e)
           h = p.html or ''
           open('debug/login.html', 'w', encoding='utf-8').write(h)
-          low = h.lower()
-          cf = any(m in low for m in ['just a moment', 'cf-chl', 'challenge-platform', 'cf_chl_opt', 'checking your browser'])
-          info = 'TITLE=%s | URL=%s | HTML_LEN=%d | CLOUDFLARE=%s | HAS_LOGIN_INPUT=%s' % (p.title, p.url, len(h), cf, 'login-account-name' in h)
+          info = 'TITLE=%s | URL=%s | HTML_LEN=%d | HAS_LOGIN_INPUT=%s' % (p.title, p.url, len(h), 'login-account-name' in h)
           print(info)
           print(h[:2000])
           s = os.environ.get('GITHUB_STEP_SUMMARY')
           if s:
-              open(s, 'a', encoding='utf-8').write('## Login probe' + chr(10) + chr(10) + info + chr(10) + chr(10) + h[:1200])
+              open(s, 'a', encoding='utf-8').write('## Browser probe' + chr(10) + chr(10) + info + chr(10) + chr(10) + h[:800] + chr(10))
           p.quit()
           EOF
           xvfb-run -a --server-args="-screen 0 1920x1080x24" python probe.py
+      - name: Run script
+        if: always()
+        env:
+          LINUXDO_USERNAME: ${{ secrets.LINUXDO_USERNAME }}
+          LINUXDO_PASSWORD: ${{ secrets.LINUXDO_PASSWORD }}
+        run: |
+          T="${{ github.event.inputs.topics || '3' }}"
+          L="${{ github.event.inputs.like_rate || '0' }}"
+          M="${{ github.event.inputs.mode || 'xvfb' }}"
+          echo "mode=$M topics=$T like=$L"
+          if [ "$M" = "headless" ]; then
+            python linux_do_headless.py --topics "$T" --like-rate "$L" --debug
+          else
+            xvfb-run -a --server-args="-screen 0 1920x1080x24" python linux_do_headless.py --topics "$T" --like-rate "$L" --debug --no-headless
+          fi
       - name: Upload debug
         if: always()
         uses: actions/upload-artifact@v4
