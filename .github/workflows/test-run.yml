@@ -62,3 +62,42 @@ jobs:
           else
             xvfb-run -a --server-args="-screen 0 1920x1080x24" python linux_do_headless.py --topics "$T" --like-rate "$L" --debug --no-headless
           fi
+      - name: Probe login page
+        if: always()
+        run: |
+          cat > probe.py <<'EOF'
+          import time, os
+          from DrissionPage import ChromiumPage, ChromiumOptions
+          o = ChromiumOptions()
+          o.set_argument('--no-sandbox')
+          o.set_argument('--disable-dev-shm-usage')
+          o.set_argument('--disable-gpu')
+          o.set_argument('--window-size=1920,1080')
+          p = ChromiumPage(o)
+          p.get('https://linux.do/login')
+          time.sleep(12)
+          os.makedirs('debug', exist_ok=True)
+          try:
+              p.get_screenshot(path='debug', name='login.png', full_page=True)
+          except Exception as e:
+              print('screenshot failed:', e)
+          h = p.html or ''
+          open('debug/login.html', 'w', encoding='utf-8').write(h)
+          low = h.lower()
+          cf = any(m in low for m in ['just a moment', 'cf-chl', 'challenge-platform', 'cf_chl_opt', 'checking your browser'])
+          info = 'TITLE=%s | URL=%s | HTML_LEN=%d | CLOUDFLARE=%s | HAS_LOGIN_INPUT=%s' % (p.title, p.url, len(h), cf, 'login-account-name' in h)
+          print(info)
+          print(h[:2000])
+          s = os.environ.get('GITHUB_STEP_SUMMARY')
+          if s:
+              open(s, 'a', encoding='utf-8').write('## Login probe' + chr(10) + chr(10) + info + chr(10) + chr(10) + h[:1200])
+          p.quit()
+          EOF
+          xvfb-run -a --server-args="-screen 0 1920x1080x24" python probe.py
+      - name: Upload debug
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug
+          path: debug/
+          if-no-files-found: ignore
